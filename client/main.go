@@ -42,7 +42,10 @@ func readFromServer(conn net.Conn) {
 		
 		message := strings.TrimSpace(string(buffer[:n]))
 		if message != "" {
-			fmt.Printf("\r%s\n> ", message)
+			fmt.Print(message)
+		if !strings.Contains(message, "***") && !strings.Contains(message, "Welcome") && !strings.Contains(message, "Usage:") {
+				fmt.Print("\n")
+			}	
 		}
 	}
 }
@@ -58,11 +61,7 @@ func readFromUser(conn net.Conn) {
 		}
 		
 		message := strings.TrimSpace(scanner.Text())
-		
-		if message == "quit" || message == "exit" {
-			fmt.Println("👋 Goodbye!")
-			return
-		}
+	
 		
 		if message == "" {
 			continue
