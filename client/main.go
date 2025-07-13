@@ -19,11 +19,7 @@ func main() {
 	defer conn.Close()
 
 	fmt.Println("🔗 Connected to TCP Chat Server!")
-	fmt.Printf("📍 Your address: %s\n", conn.LocalAddr())
-	fmt.Println("💬 Type your messages and press Enter to send")
-	fmt.Println("📝 Type 'quit' or press Ctrl+C to exit")
-	fmt.Println("----------------------------------------")
-
+	
 	setupGracefulShutdown(conn)
 
 	go readFromServer(conn)
@@ -40,12 +36,9 @@ func readFromServer(conn net.Conn) {
 			os.Exit(1)
 		}
 		
-		message := strings.TrimSpace(string(buffer[:n]))
+		message := string(buffer[:n])
 		if message != "" {
 			fmt.Print(message)
-		if !strings.Contains(message, "***") && !strings.Contains(message, "Welcome") && !strings.Contains(message, "Usage:") {
-				fmt.Print("\n")
-			}	
 		}
 	}
 }
@@ -54,14 +47,11 @@ func readFromUser(conn net.Conn) {
 	scanner := bufio.NewScanner(os.Stdin)
 	
 	for {
-		fmt.Print("> ")
-		
 		if !scanner.Scan() {
 			break 	
 		}
 		
 		message := strings.TrimSpace(scanner.Text())
-	
 		
 		if message == "" {
 			continue
