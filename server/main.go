@@ -1,7 +1,11 @@
 package main
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"strings"
@@ -28,10 +32,22 @@ type Message struct {
 	messageType string
 }
 
+
+var sharedKey = []byte{
+	0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
+	0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10,
+	0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+	0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00,
+}
+
 var chatServer = &ChatServer{
 	clients:   make(map[net.Conn]*Client),
 	username:  make(map[string]net.Conn),
 	broadcast: make(chan Message, 100), 
+}
+
+type Encryption struct {
+	key []byte
 }
 
 func main() {
@@ -43,7 +59,7 @@ func main() {
 	}
 	defer listener.Close()
 
-	fmt.Println("🚀 TCP Chat Server started on 127.0.0.1:8080")
+	fmt.Println("TCP Chat Server started on 127.0.0.1:8080")
 	fmt.Println("Waiting for clients to connect...")
 
 	for {
@@ -58,6 +74,8 @@ func main() {
 }
 
 func (cs *ChatServer) handleBroadcast() {
+	encryption := &Encryption{key: sharedKey}
+	
 	for message := range cs.broadcast {
 		cs.mutex.RLock()
 		for conn := range cs.clients {
@@ -76,9 +94,13 @@ func (cs *ChatServer) handleBroadcast() {
 					formattedMsg = fmt.Sprintf("[%s]: %s", message.sender, message.content)
 			}
 			
+			encryptedMsg, err := encryption.Encrypt([]byte(formattedMsg))
+			if err != nil {
+				log.Printf("Encryption error: %v", err)
+				continue
+			}
 			
-			
-			conn.Write([]byte(formattedMsg))
+			conn.Write(encryptedMsg)
 		}
 		cs.mutex.RUnlock()
 	}
@@ -118,8 +140,8 @@ func (cs *ChatServer) addClient(conn net.Conn, name string) {
 	cs.clients[conn] = client
 	cs.username[name] = conn
 	
-	fmt.Printf("✅ Client connected: %s (%s)\n", name, client.address)
-	fmt.Printf("📊 Total clients: %d\n", len(cs.clients))
+	fmt.Printf("Client connected: %s (%s)\n", name, client.address)
+	fmt.Printf("Total clients: %d\n", len(cs.clients))
 }	
 
 func (cs *ChatServer) removeClient(conn net.Conn) {
@@ -129,8 +151,8 @@ func (cs *ChatServer) removeClient(conn net.Conn) {
 	if client, exists := cs.clients[conn]; exists {
 		delete(cs.clients, conn)
 		delete(cs.username, client.username)
-		fmt.Printf("❌ Client disconnected: %s (%s)\n", client.username, client.address)
-		fmt.Printf("📊 Total clients: %d\n", len(cs.clients))
+		fmt.Printf("Client disconnected: %s (%s)\n", client.username, client.address)
+		fmt.Printf("Total clients: %d\n", len(cs.clients))
 	}
 	
 }
@@ -153,12 +175,12 @@ func (cs *ChatServer) changeUsername(conn net.Conn, newName string) bool {
 
 	cs.broadcast <- Message{
 		sender: client.username,
-		content: fmt.Sprintf("✅ Username changed: %s -> %s", oldName, newName),
+		content: fmt.Sprintf("Username changed: %s -> %s", oldName, newName),
 		conn: conn,
 		messageType: "username_change",
 	}
 
-	fmt.Printf("✅ Username changed: %s -> %s\n", oldName, newName)
+	fmt.Printf("Username changed: %s -> %s\n", oldName, newName)
 	return true
 }
 
@@ -166,7 +188,15 @@ func handleClient(conn net.Conn) {
 	defer conn.Close()
 	defer chatServer.removeClient(conn)
 
-	conn.Write([]byte("Welcome to TCP Chat!\nPlease enter your username (3-20 characters, letters, numbers, underscore only): "))
+	encryption := &Encryption{key: sharedKey}
+
+	welcomeMsg := "Welcome to TCP Chat!\nPlease enter your username (3-20 characters, letters, numbers, underscore only): "
+	encryptedWelcome, err := encryption.Encrypt([]byte(welcomeMsg))
+	if err != nil {
+		log.Printf("Failed to encrypt welcome message: %v", err)
+		return
+	}
+	conn.Write(encryptedWelcome)
 	
 	
 	buffer := make([]byte, 1024)
@@ -178,16 +208,35 @@ func handleClient(conn net.Conn) {
 			return
 		}
 
-		proposedUsername := strings.TrimSpace(string(buffer[:n]))
+	
+		decryptedData, err := encryption.Decrypt(buffer[:n])
+		if err != nil {
+			log.Printf("Failed to decrypt message: %v", err)
+			continue
+		}
+
+		proposedUsername := strings.TrimSpace(string(decryptedData))
 
 		
 		if !chatServer.isUserNameValid(proposedUsername) {
-			conn.Write([]byte("Invalid username. Please use 3-20 characters, letters, numbers, underscore only.\n"))
+			errorMsg := "Invalid username. Please use 3-20 characters, letters, numbers, underscore only.\n"
+			encryptedError, err := encryption.Encrypt([]byte(errorMsg))
+			if err != nil {
+				log.Printf("Failed to encrypt error message: %v", err)
+				continue
+			}
+			conn.Write(encryptedError)
 			continue
 		}
 
 		if !chatServer.isUsernameAvailable(proposedUsername) {
-			conn.Write([]byte("Username already taken. Please choose another.\n"))
+			errorMsg := "Username already taken. Please choose another.\n"
+			encryptedError, err := encryption.Encrypt([]byte(errorMsg))
+			if err != nil {
+				log.Printf("Failed to encrypt error message: %v", err)
+				continue
+			}
+			conn.Write(encryptedError)
 			continue
 		}
             
@@ -198,11 +247,17 @@ func handleClient(conn net.Conn) {
 	chatServer.addClient(conn, username)
 	defer chatServer.removeClient(conn)
 
-	conn.Write([]byte(fmt.Sprintf("Welcome %s! You can now start chatting.\nCommands: /nick <newname> to change username, /quit to exit\n", username)))
+	welcomeMsg = fmt.Sprintf("Welcome %s! You can now start chatting.\nCommands: /nick <newname> to change username, /quit to exit\n", username)
+	encryptedWelcome, err = encryption.Encrypt([]byte(welcomeMsg))
+	if err != nil {
+		log.Printf("Failed to encrypt welcome message: %v", err)
+		return
+	}
+	conn.Write(encryptedWelcome)
 
 	chatServer.broadcast <- Message{
 		sender: "System",
-		content: fmt.Sprintf("✅ %s joined the chat", username),
+		content: fmt.Sprintf("%s joined the chat", username),
 		conn: nil,
 		messageType: "system",
 	}
@@ -212,14 +267,20 @@ func handleClient(conn net.Conn) {
 		if err != nil {
 			chatServer.broadcast <- Message{
 				sender: "System",
-				content: fmt.Sprintf("❌ %s left the chat", username),
+				content: fmt.Sprintf("%s left the chat", username),
 				conn: nil,
 				messageType: "system",
 			}
 			return
 		}
 
-		message := strings.TrimSpace(string(buffer[:n]))
+		decryptedData, err := encryption.Decrypt(buffer[:n])
+		if err != nil {
+			log.Printf("Failed to decrypt message: %v", err)
+			continue
+		}
+
+		message := strings.TrimSpace(string(decryptedData))
 		if message == "" {
 			continue
 		}
@@ -229,7 +290,7 @@ func handleClient(conn net.Conn) {
 				continue
 		}
 
-		fmt.Printf("📩 Message from %s: %s", username, message)
+		fmt.Printf("Message from %s: %s", username, message)
 
 		chatServer.broadcast <- Message{
 			sender: username,
@@ -241,6 +302,8 @@ func handleClient(conn net.Conn) {
 } 
 
 func handleCommand(conn net.Conn, command, currentUsername string) {
+	encryption := &Encryption{key: sharedKey}
+	
 	parts := strings.Fields(command)
 	if len(parts) == 0 {
 		return
@@ -249,33 +312,133 @@ func handleCommand(conn net.Conn, command, currentUsername string) {
 	switch parts[0] {
 	case "/nick":
 		if len(parts) != 2 {
-			conn.Write([]byte("Usage: /nick <newusername>\n"))
+			errorMsg := "Usage: /nick <newusername>\n"
+			encryptedError, err := encryption.Encrypt([]byte(errorMsg))
+			if err != nil {
+				log.Printf("Failed to encrypt error message: %v", err)
+				return
+			}
+			conn.Write(encryptedError)
 			return
 		}
 		
 		newUsername := parts[1]
 		
 		if !chatServer.isUserNameValid(newUsername) {
-			conn.Write([]byte("Invalid username. Please use 3-20 characters (letters, numbers, underscore only)\n"))
+			errorMsg := "Invalid username. Please use 3-20 characters (letters, numbers, underscore only)\n"
+			encryptedError, err := encryption.Encrypt([]byte(errorMsg))
+			if err != nil {
+				log.Printf("Failed to encrypt error message: %v", err)
+				return
+			}
+			conn.Write(encryptedError)
 			return
 		}
 		
 		if !chatServer.isUsernameAvailable(newUsername) {
-			conn.Write([]byte("Username already taken. Please choose another.\n"))
+			errorMsg := "Username already taken. Please choose another.\n"
+			encryptedError, err := encryption.Encrypt([]byte(errorMsg))
+			if err != nil {
+				log.Printf("Failed to encrypt error message: %v", err)
+				return
+			}
+			conn.Write(encryptedError)
 			return
 		}
 		
 		if chatServer.changeUsername(conn, newUsername) {
-			conn.Write([]byte(fmt.Sprintf("Username changed to: %s\n", newUsername)))
+			successMsg := fmt.Sprintf("Username changed to: %s\n", newUsername)
+			encryptedSuccess, err := encryption.Encrypt([]byte(successMsg))
+			if err != nil {
+				log.Printf("Failed to encrypt success message: %v", err)
+				return
+			}
+			conn.Write(encryptedSuccess)
 		} else {
-			conn.Write([]byte("Failed to change username\n"))
+			errorMsg := "Failed to change username\n"
+			encryptedError, err := encryption.Encrypt([]byte(errorMsg))
+			if err != nil {
+				log.Printf("Failed to encrypt error message: %v", err)
+				return
+			}
+			conn.Write(encryptedError)
 		}
 		
 	case "/quit":
-		conn.Write([]byte("Goodbye!\n"))
+		goodbyeMsg := "Goodbye!\n"
+		encryptedGoodbye, err := encryption.Encrypt([]byte(goodbyeMsg))
+		if err != nil {
+			log.Printf("Failed to encrypt goodbye message: %v", err)
+		} else {
+			conn.Write(encryptedGoodbye)
+		}
 		conn.Close()
 		
 	default:
-		conn.Write([]byte("Unknown command. Available commands: /nick <newname>, /quit\n"))
+		errorMsg := "Unknown command. Available commands: /nick <newname>, /quit\n"
+		encryptedError, err := encryption.Encrypt([]byte(errorMsg))
+		if err != nil {
+			log.Printf("Failed to encrypt error message: %v", err)
+			return
+		}
+		conn.Write(encryptedError)
 	}
+}
+
+
+
+func NewEncryption() (*Encryption, error) {
+	key := make([]byte, 32)
+	 if _, err := io.ReadFull(rand.Reader, key); err != nil {
+        return nil, err
+    }
+
+	return &Encryption{key: key}, nil
+}
+
+
+func (e *Encryption) Encrypt(plaintext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(e.key)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+
+	// GCM can handle messages up to 2^39 - 256 bits, which is much larger than we need
+	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
+	return ciphertext, nil
+}
+
+func (e *Encryption) Decrypt(data []byte) ([]byte, error) {
+	block, err := aes.NewCipher(e.key)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(data) < nonceSize {
+		 return nil, fmt.Errorf("ciphertext too short")
+	}
+
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return plaintext, nil
 }
