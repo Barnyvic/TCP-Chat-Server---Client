@@ -17,6 +17,8 @@ type ChatServer struct {
 	username  map[string]net.Conn
 	mutex     sync.RWMutex         
 	broadcast chan Message         
+	blockedUsers map[string]map[string]bool
+	privateHistory map[string][]Message
 }
 
 type Client struct {
@@ -30,6 +32,8 @@ type Message struct {
 	content string
 	conn    net.Conn 
 	messageType string
+	recipient string
+	isPrivate bool
 }
 
 
@@ -44,6 +48,8 @@ var chatServer = &ChatServer{
 	clients:   make(map[net.Conn]*Client),
 	username:  make(map[string]net.Conn),
 	broadcast: make(chan Message, 100), 
+	blockedUsers: make(map[string]map[string]bool),
+	privateHistory: make(map[string][]Message),
 }
 
 type Encryption struct {
@@ -413,7 +419,6 @@ func (e *Encryption) Encrypt(plaintext []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	// GCM can handle messages up to 2^39 - 256 bits, which is much larger than we need
 	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
 	return ciphertext, nil
 }
@@ -442,3 +447,4 @@ func (e *Encryption) Decrypt(data []byte) ([]byte, error) {
 
 	return plaintext, nil
 }
+
